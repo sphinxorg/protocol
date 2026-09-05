@@ -18,6 +18,7 @@ require (
 	github.com/pdfcpu/pdfcpu v0.13.0
 	github.com/prometheus/client_golang v1.22.0
 	github.com/syndtr/goleveldb v1.0.0
+	github.com/tetratelabs/wazero v1.9.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sys v0.45.0

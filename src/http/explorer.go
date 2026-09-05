@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sphinxfndorg/protocol/src/common"
 	"github.com/sphinxfndorg/protocol/src/core"
 	types "github.com/sphinxfndorg/protocol/src/core/transaction"
 )
@@ -30,11 +31,103 @@ func (s *Server) registerExplorerRoutes(r *gin.RouterGroup) {
 		explorer.GET("/address/:address", s.handleExplorerAddress)
 		explorer.GET("/search", s.handleExplorerSearch)
 		explorer.GET("/mempool", s.handleExplorerMempool)
+		explorer.GET("/holders/growth", s.handleExplorerHolderGrowth)
 		explorer.GET("/wallets", s.handleExplorerWallets)
 		explorer.GET("/validators", s.handleExplorerValidators)
 		explorer.GET("/validators/map", s.handleExplorerValidatorMap)
 		explorer.GET("/validators/:id", s.handleExplorerValidatorDetail)
 	}
+}
+
+// handleExplorerHolderGrowth returns the growth of addresses first observed in
+// canonical blocks. It intentionally does not accept client-side "registration"
+// events: a wallet created offline is private and must not affect public metrics
+// until it appears in a finalized block.
+func (s *Server) handleExplorerHolderGrowth(c *gin.Context) {
+	bc := s.blockchain
+	if bc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "blockchain not initialized"})
+		return
+	}
+
+	days, err := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if err != nil || days < 1 || days > 365 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "days must be between 1 and 365"})
+		return
+	}
+
+	// Blocks are the durable event log. Rebuilding this small aggregate keeps it
+	// correct after restart and avoids maintaining mutable explorer-only state.
+	cutoff := time.Now().UTC().AddDate(0, 0, -(days - 1)).Truncate(24 * time.Hour)
+	seen := make(map[string]struct{})
+	var holdersBeforeCutoff uint64
+	type dayStat struct{ holders, newHolders uint64 }
+	byDay := make(map[string]*dayStat)
+
+	for height := uint64(0); height < bc.GetBlockCount(); height++ {
+		block := bc.GetBlockByNumber(height)
+		if block == nil || block.Header == nil {
+			continue
+		}
+		day := time.Unix(block.Header.Timestamp, 0).UTC().Truncate(24 * time.Hour)
+		key := day.Format("2006-01-02")
+		for _, tx := range block.Body.TxsList {
+			if tx == nil {
+				continue
+			}
+			for _, candidate := range []string{tx.Sender, tx.Receiver} {
+				address, normalizeErr := common.NormalizeSPIFAddress(candidate)
+				// The explorer's PQ holder metric excludes legacy 20-byte accounts.
+				if normalizeErr != nil || len(address) != 64 {
+					continue
+				}
+				if _, exists := seen[address]; exists {
+					continue
+				}
+				seen[address] = struct{}{}
+				if !day.Before(cutoff) {
+					if byDay[key] == nil {
+						byDay[key] = &dayStat{}
+					}
+					byDay[key].newHolders++
+				}
+			}
+		}
+		if !day.Before(cutoff) {
+			if byDay[key] == nil {
+				byDay[key] = &dayStat{}
+			}
+			byDay[key].holders = uint64(len(seen))
+		} else {
+			holdersBeforeCutoff = uint64(len(seen))
+		}
+	}
+
+	points := make([]gin.H, 0, days)
+	lastHolders := holdersBeforeCutoff
+	for offset := days - 1; offset >= 0; offset-- {
+		day := cutoff.AddDate(0, 0, days-1-offset)
+		stat := byDay[day.Format("2006-01-02")]
+		newHolders := uint64(0)
+		if stat != nil {
+			newHolders = stat.newHolders
+			if stat.holders > 0 {
+				lastHolders = stat.holders
+			}
+		}
+		points = append(points, gin.H{
+			"date":        day.Format("2006-01-02"),
+			"holders":     lastHolders,
+			"new_holders": newHolders,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"metric": "on_chain_spif_addresses_first_observed",
+		"note":   "Offline address generation is not observable. An address is counted when it first appears in a canonical block.",
+		"days":   days,
+		"points": points,
+	})
 }
 
 // ============================================================================
@@ -322,10 +415,10 @@ func (s *Server) handleExplorerTransaction(c *gin.Context) {
 		"status":          status,
 		"sender":          tx.Sender,
 		"receiver":        tx.Receiver,
-		"amount_nspx":     tx.Amount.String(),
+		"amount_nspx":     bigIntString(tx.Amount),
 		"amount_spx":      amountSPX,
-		"gas_limit":       tx.GasLimit.String(),
-		"gas_price":       tx.GasPrice.String(),
+		"gas_limit":       bigIntString(tx.GasLimit),
+		"gas_price":       bigIntString(tx.GasPrice),
 		"gas_fee_spx":     gasFee,
 		"nonce":           tx.Nonce,
 		"timestamp":       tx.Timestamp,
@@ -368,8 +461,13 @@ func (s *Server) handleExplorerAddress(c *gin.Context) {
 		return
 	}
 
-	// Normalize address
-	normalized := normalizeAddress(address)
+	// Reject malformed addresses before they reach state lookups. This avoids
+	// ambiguous explorer results and keeps the address representation canonical.
+	normalized, err := common.NormalizeSPIFAddress(address)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid SPIF address"})
+		return
+	}
 
 	stateDB, err := bc.NewStateDB()
 	if err != nil {
@@ -948,15 +1046,11 @@ func formatBlockDetail(block *types.Block) gin.H {
 	return detail
 }
 
-// normalizeAddress normalizes an SPIF or hex address.
-func normalizeAddress(address string) string {
-	// Remove SPIF prefix and spaces
-	addr := strings.TrimPrefix(address, "SPIF ")
-	addr = strings.TrimPrefix(addr, "spif ")
-	addr = strings.ReplaceAll(addr, " ", "")
-	addr = strings.ReplaceAll(addr, "-", "")
-	addr = strings.ToLower(addr)
-	return addr
+func bigIntString(value *big.Int) string {
+	if value == nil {
+		return "0"
+	}
+	return value.String()
 }
 
 // extractIPFromNodeID extracts IP from a node ID like "Node-127.0.0.1:30303"

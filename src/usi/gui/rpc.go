@@ -21,15 +21,9 @@ import (
 	key "github.com/sphinxfndorg/protocol/src/core/sthincs/key/backend"
 	types "github.com/sphinxfndorg/protocol/src/core/transaction"
 	"github.com/sphinxfndorg/protocol/src/crypto/STHINCS/sthincs"
+	"github.com/sphinxfndorg/protocol/src/policy"
 	"github.com/sphinxfndorg/protocol/src/rpc"
 	keys "github.com/sphinxfndorg/protocol/src/usi/core/key"
-)
-
-const (
-	// GasPriceSPX defines the gas price in nSPX per gas unit.
-	// 1 gSPX = 1,000,000,000 nSPX (same magnitude as 1 Gwei in Ethereum).
-	// This is a reasonable default gas price for Sphinx transactions.
-	GasPriceSPX = 1_000_000_000 // 1 gSPX in nSPX
 )
 
 // NewWalletClient creates a new wallet RPC client.
@@ -205,16 +199,17 @@ func (c *WalletClient) SendTransaction(toAddress string, amount *big.Int, memo s
 	}
 
 	// ─── 3. Build and sign transaction locally ──────────────────
-	// Gas price: 1 gSPX = 1,000,000,000 nSPX per gas unit
-	gasPrice := big.NewInt(GasPriceSPX)
+	// Mirror the policy quote for immediate UX. The node independently
+	// recomputes and enforces this quote before accepting the transaction.
+	gasQuote := policy.GetDefaultPolicyParams().QuoteTransactionGas(uint64(len(memo)))
 
 	tx := &types.Transaction{
 		ID:         "",
 		Sender:     rawSender,
 		Receiver:   rawTo,
 		Amount:     amount,
-		GasLimit:   big.NewInt(21000), // Standard gas limit for a transfer
-		GasPrice:   gasPrice,          // 1 gSPX per gas unit
+		GasLimit:   gasQuote.GasLimit,
+		GasPrice:   gasQuote.GasPrice,
 		Nonce:      nonce,
 		Timestamp:  time.Now().Unix(),
 		Signature:  []byte{},

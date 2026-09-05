@@ -22,6 +22,11 @@ package core
 // Only Ready and ValidatorActive nodes may participate in PBFT consensus.
 // All other states are pre-consensus synchronization states.
 const (
+	// Fee pool accounts are consensus-owned balances. Staking distribution is
+	// claimed by the staking subsystem; treasury governance controls treasury.
+	StakingFeePoolAddress  = "system:staking-fee-pool"
+	TreasuryFeePoolAddress = "system:treasury-fee-pool"
+
 	NodeBootstrapping    NodeState = iota // 0: Initial startup, genesis loading
 	NodeDiscoveringPeers                  // 1: Looking for peers
 	NodeConnecting                        // 2: Establishing connections
@@ -93,6 +98,7 @@ const (
 // Add constants for new keys
 const (
 	accountPrefix    = "acct:"
+	contractPrefix   = "contract:"
 	totalSupplyKey   = "supply:total"
 	genesisSupplyKey = "supply:genesis"
 	rewardsMintedKey = "supply:rewards"

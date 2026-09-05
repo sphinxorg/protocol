@@ -107,11 +107,10 @@ func GetSphinxChainParams() *SphinxChainParameters {
 		},
 
 		// Block Configuration - size and gas limits
-		MaxBlockSize:       2 * 1024 * 1024,                                   // 2MB - maximum block size
-		MaxTransactionSize: 100 * 1024,                                        // 100KB - maximum transaction size
-		TargetBlockSize:    1 * 1024 * 1024,                                   // 1MB - target block size for optimization
-		BlockGasLimit:      big.NewInt(10000000),                              // 10 million gas - maximum gas per block
-		BaseBlockReward:    new(big.Int).Mul(big.NewInt(5), big.NewInt(1e18)), // 5 SPX = 5×10^18 nSPX
+		MaxBlockSize:       2 * 1024 * 1024,      // 2MB - maximum block size
+		MaxTransactionSize: 100 * 1024,           // 100KB - maximum transaction size
+		TargetBlockSize:    1 * 1024 * 1024,      // 1MB - target block size for optimization
+		BlockGasLimit:      big.NewInt(10000000), // 10 million gas - maximum gas per block
 
 		// Genesis-specific configuration.
 		// NOTE: The actual genesis block is always built from

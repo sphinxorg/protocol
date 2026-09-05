@@ -8,48 +8,37 @@ import (
 	"math/big"
 )
 
+const bytesPerGiB = uint64(1024 * 1024 * 1024)
+
+// CalculateStorageCostExact returns the policy charge for retaining bytes for
+// whole months. All arithmetic is integer nSPX, making it safe to use for
+// consensus accounting as well as client estimates.
+func (p *PolicyParameters) CalculateStorageCostExact(bytes, months uint64) *StoragePricing {
+	if p == nil || p.PinRatePerGBMonth == nil || bytes == 0 || months == 0 {
+		return &StoragePricing{Bytes: bytes, DurationDays: months * 30, CostPerMonth: big.NewInt(0), TotalCost: big.NewInt(0)}
+	}
+	// Round up partial GiB usage so a non-empty persistent artifact always
+	// pays for its retained storage allocation.
+	numerator := new(big.Int).Mul(p.PinRatePerGBMonth, new(big.Int).SetUint64(bytes))
+	divisor := new(big.Int).SetUint64(bytesPerGiB)
+	costPerMonth := new(big.Int).Add(numerator, new(big.Int).Sub(divisor, big.NewInt(1)))
+	costPerMonth.Div(costPerMonth, divisor)
+	return &StoragePricing{
+		Bytes: bytes, DurationDays: months * 30,
+		CostPerMonth: costPerMonth,
+		TotalCost:    new(big.Int).Mul(costPerMonth, new(big.Int).SetUint64(months)),
+	}
+}
+
 // CalculateStorageCost calculates the cost for storing data
 func (p *PolicyParameters) CalculateStorageCost(bytes uint64, months float64) *StoragePricing {
-	// Convert months to days (approximate)
-	days := uint64(months * 30)
-
-	// Calculate cost per month
-	costPerMonth := new(big.Int).Mul(
-		p.PinRatePerGBMonth,
-		new(big.Int).SetUint64(bytes),
-	)
-	// Divide by 1GB (1e9) since PinRate is per GB
-	costPerMonth = new(big.Int).Div(costPerMonth, big.NewInt(1e9))
-
-	// Calculate total cost
-	totalCost := new(big.Int).Mul(costPerMonth, new(big.Int).SetUint64(uint64(months)))
-
-	return &StoragePricing{
-		Bytes:        bytes,
-		DurationDays: days,
-		CostPerMonth: costPerMonth,
-		TotalCost:    totalCost,
+	if months <= 0 {
+		return p.CalculateStorageCostExact(bytes, 0)
 	}
+	return p.CalculateStorageCostExact(bytes, uint64(months))
 }
 
 // CalculatePinningCost calculates the cost for pinning data (long-term storage)
 func (p *PolicyParameters) CalculatePinningCost(bytes uint64, months uint64) *big.Int {
-	// PinRate * (bytes / GB) * months
-	// Convert bytes to GB (1 GB = 1e9 bytes)
-	gb := new(big.Float).SetUint64(bytes)
-	gb.Quo(gb, big.NewFloat(1e9))
-
-	// Multiply by months
-	monthsFloat := new(big.Float).SetUint64(months)
-	gb.Mul(gb, monthsFloat)
-
-	// Multiply by PinRate (0.01 SPX)
-	rate := new(big.Float).SetFloat64(0.01)
-	gb.Mul(gb, rate)
-
-	// Convert to nSPX (1 SPX = 1e18 nSPX)
-	nspx := new(big.Float).Mul(gb, new(big.Float).SetFloat64(1e18))
-
-	result, _ := nspx.Int(nil)
-	return result
+	return p.CalculateStorageCostExact(bytes, months).TotalCost
 }

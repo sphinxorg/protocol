@@ -529,6 +529,9 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 	proposerID := block.Header.ProposerID
 
 	for i, tx := range block.Body.TxsList {
+		if tx == nil || tx.Amount == nil {
+			return fmt.Errorf("transaction %d is missing amount", i)
+		}
 		// Genesis (block 0) distribution transactions have
 		// Sender: GenesisVaultAddress and are processed here as normal
 		// transfers, same as any other block. ExecuteBlock funds the vault
@@ -567,15 +570,36 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 			logger.Error("applyTransactions: tx[%d] SubBalance: %v", i, err)
 			return errors.New("failed to subtract balance")
 		}
-		stateDB.AddBalance(tx.Receiver, tx.Amount)
+		recipient := tx.Receiver
+		if tx.ToContract != "" {
+			recipient = tx.ToContract
+		}
+		stateDB.AddBalance(recipient, tx.Amount)
 
-		if proposerID != "" && gasFee.Sign() > 0 {
-			// Map nodeID → SPIF reward address for gas fees too
-			gasAddr := bc.ValidatorRewardAddress(proposerID)
-			if gasAddr == "" {
-				gasAddr = proposerID
+		if err := bc.executeContractTransaction(tx, stateDB, block.GetHeight()); err != nil {
+			return fmt.Errorf("contract execution for tx[%d]: %w", i, err)
+		}
+
+		if gasFee.Sign() > 0 {
+			// Fee amounts and their allocation are policy-defined. Core only
+			// applies the deterministic allocation to consensus-owned accounts.
+			distribution := bc.ActivePolicy().DistributeFees(gasFee)
+			if distribution.Validators.Sign() > 0 {
+				gasAddr := TreasuryFeePoolAddress
+				// A valid ordinary block has a proposer. On malformed historical
+				// blocks, preserve accounting by routing this share to treasury
+				// rather than silently losing it.
+				if proposerID != "" {
+					gasAddr = bc.ValidatorRewardAddress(proposerID)
+				}
+				if gasAddr == "" {
+					gasAddr = proposerID
+				}
+				stateDB.AddBalance(gasAddr, distribution.Validators)
 			}
-			stateDB.AddBalance(gasAddr, gasFee)
+			stateDB.AddBalance(StakingFeePoolAddress, distribution.Stakers)
+			stateDB.AddBalance(TreasuryFeePoolAddress, distribution.Treasury)
+			stateDB.DecrementTotalSupply(distribution.Burned)
 		}
 
 		stateDB.IncrementNonce(tx.Sender)
@@ -585,7 +609,7 @@ func (bc *Blockchain) applyTransactions(block *types.Block, stateDB *StateDB) er
 	return nil
 }
 
-// mintBlockReward issues BaseBlockReward to the block proposer, respecting
+// mintBlockReward issues the policy-defined reward to the block proposer, respecting
 // the hard 5 billion SPX supply cap.
 // mintBlockReward issues block rewards, tracking genesis supply and rewards separately
 func (bc *Blockchain) mintBlockReward(block *types.Block, stateDB *StateDB) {
@@ -626,7 +650,7 @@ func (bc *Blockchain) mintBlockReward(block *types.Block, stateDB *StateDB) {
 	// (There's no separate "distribution block 1" anymore — genesis
 	// allocations are distributed inside block 0 itself via
 	// ExecuteGenesisBlock, so block 1 is just the first ordinary block.)
-	reward := new(big.Int).Set(bc.chainParams.BaseBlockReward)
+	reward := bc.PolicyBlockReward()
 	if reward.Sign() <= 0 {
 		return
 	}
@@ -671,6 +695,47 @@ func (bc *Blockchain) mintBlockReward(block *types.Block, stateDB *StateDB) {
 		totalMinted.String(), genesisSupply.String(), rewardsMinted.String(), remainingNSPX.String())
 }
 
+// mintEpochInflation mints policy-defined inflation only at deterministic
+// block-height epoch boundaries. It deliberately uses height rather than a
+// node clock, so replaying a block produces identical supply everywhere.
+func (bc *Blockchain) mintEpochInflation(block *types.Block, stateDB *StateDB) {
+	if block == nil || block.GetHeight() == 0 {
+		return
+	}
+	p := bc.ActivePolicy()
+	if p.BlocksPerEpoch == 0 || block.GetHeight()%p.BlocksPerEpoch != 0 {
+		return
+	}
+	blocksPerYear := p.GetBlocksPerYear()
+	if blocksPerYear == 0 {
+		return
+	}
+	year := block.GetHeight()/blocksPerYear + 1
+	// Until validator stake is stored in StateDB, the policy target is the only
+	// consensus-stable ratio available to every replaying node.
+	distribution := p.CalculateEpochInflationExact(stateDB.GetTotalSupply(), year)
+	if distribution.TotalMinted.Sign() <= 0 {
+		return
+	}
+	remaining := new(big.Int).Sub(maxSupplyNSPX, stateDB.GetTotalSupply())
+	if remaining.Sign() <= 0 {
+		return
+	}
+	if distribution.TotalMinted.Cmp(remaining) > 0 {
+		// Preserve the policy staking/community ratio as closely as integer
+		// arithmetic allows when the hard cap truncates an epoch.
+		distribution.TotalMinted.Set(remaining)
+		distribution.StakingRewards.Mul(remaining, new(big.Int).SetUint64(p.StakingRewardBPS))
+		distribution.StakingRewards.Div(distribution.StakingRewards, big.NewInt(10000))
+		distribution.CommunityFund.Sub(remaining, distribution.StakingRewards)
+	}
+	stateDB.AddBalance(StakingFeePoolAddress, distribution.StakingRewards)
+	stateDB.AddBalance(TreasuryFeePoolAddress, distribution.CommunityFund)
+	stateDB.IncrementTotalSupply(distribution.TotalMinted)
+	stateDB.IncrementRewardsMinted(distribution.TotalMinted)
+	logger.Info("policy inflation: epoch=%d year=%d minted=%s nSPX (staking=%s treasury=%s)", block.GetHeight()/p.BlocksPerEpoch, year, distribution.TotalMinted, distribution.StakingRewards, distribution.CommunityFund)
+}
+
 // ExecuteBlock is called from CommitBlock.
 func (bc *Blockchain) ExecuteBlock(block *types.Block) ([]byte, error) {
 	stateDB, err := bc.newStateDB()
@@ -690,6 +755,7 @@ func (bc *Blockchain) ExecuteBlock(block *types.Block) ([]byte, error) {
 	// For all other blocks, mint reward AFTER transactions.
 	if block.GetHeight() > 0 {
 		bc.mintBlockReward(block, stateDB)
+		bc.mintEpochInflation(block, stateDB)
 	}
 
 	stateRoot, err := stateDB.Commit()
@@ -720,6 +786,7 @@ func (bc *Blockchain) previewStateRoot(height uint64, txs []*types.Transaction, 
 		return bc.calculateStateRootFallback()
 	}
 	bc.mintBlockReward(block, stateDB)
+	bc.mintEpochInflation(block, stateDB)
 
 	root, err := stateDB.computeStateRoot()
 	if err != nil {
@@ -1386,6 +1453,9 @@ func (bc *Blockchain) calculateTxsSize(tx *types.Transaction) (uint64, error) {
 	estimatedSize += uint64(len(tx.MerkleRootHash))
 	estimatedSize += uint64(len(tx.Commitment))
 	estimatedSize += uint64(len(tx.Proof))
+	estimatedSize += uint64(len(tx.Code))
+	estimatedSize += uint64(len(tx.CallData))
+	estimatedSize += uint64(len(tx.ToContract))
 	estimatedSize += 4 // version
 
 	if tx.HasReturnData() && len(tx.ReturnData) > 0 {

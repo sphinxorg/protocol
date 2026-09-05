@@ -19,4 +19,5 @@ var (
 	ErrInvalidStakingRewardShare = errors.New("invalid staking reward share")
 	ErrInvalidTargetStakeRatio   = errors.New("invalid target stake ratio")
 	ErrInvalidFeeDistribution    = errors.New("invalid fee distribution")
+	ErrInvalidBlockReward        = errors.New("invalid block reward")
 )

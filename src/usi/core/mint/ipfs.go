@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sphinxfndorg/protocol/src/policy"
 	"github.com/sphinxfndorg/protocol/src/rpc"
 	"github.com/sphinxfndorg/protocol/src/storage"
 )
@@ -55,13 +56,18 @@ func broadcastAnchorTransaction(nodeAddr, from, keyFile string, anchorData []byt
 		return "", fmt.Errorf("key file required")
 	}
 
+	// Use the same policy quote enforced by core. This legacy mint path emits a
+	// raw RPC payload rather than a transaction struct, so the values are
+	// encoded as decimal strings here.
+	gasQuote := policy.GetDefaultPolicyParams().QuoteTransactionGas(uint64(len(anchorData)))
+
 	// Create the transaction payload
 	txPayload := map[string]interface{}{
 		"sender":      from,
 		"receiver":    from, // Send to self — this is an anchor, not a transfer
 		"amount":      "0",
-		"gas_limit":   "50000",
-		"gas_price":   "1",
+		"gas_limit":   gasQuote.GasLimit.String(),
+		"gas_price":   gasQuote.GasPrice.String(),
 		"nonce":       0,
 		"timestamp":   time.Now().Unix(),
 		"return_data": hex.EncodeToString(anchorData),

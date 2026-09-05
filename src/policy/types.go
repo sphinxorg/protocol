@@ -25,10 +25,50 @@ type PolicyParameters struct {
 	BaseStorageFee *big.Int `json:"base_storage_fee"` // β = 200,000 nSPX
 	TransactionFee *big.Int `json:"transaction_fee"`  // K_tx = 1,000 nSPX
 
+	// Gas schedule. These values are consensus inputs: clients use them to
+	// quote a transaction, while core verifies the same quote before admitting
+	// and executing it.
+	BaseTransactionGas   uint64   `json:"base_transaction_gas"`
+	ReturnDataGasPerByte uint64   `json:"return_data_gas_per_byte"`
+	MinimumGasPrice      *big.Int `json:"minimum_gas_price"` // nSPX per gas
+
+	// BlockReward is the base nSPX minted for an ordinary (non-genesis) block.
+	// It is deliberately policy-owned rather than a node-local chain setting.
+	BlockReward *big.Int `json:"block_reward"`
+
+	// Fee distribution is expressed in basis points and must total 10,000.
+	ValidatorFeeBPS uint64 `json:"validator_fee_bps"`
+	StakerFeeBPS    uint64 `json:"staker_fee_bps"`
+	TreasuryFeeBPS  uint64 `json:"treasury_fee_bps"`
+	BurnFeeBPS      uint64 `json:"burn_fee_bps"`
+
+	// Contract execution schedule. Core meters native calls and the restricted
+	// deterministic SVM against these values.
+	ContractDeployGas    uint64 `json:"contract_deploy_gas"`
+	ContractCallGas      uint64 `json:"contract_call_gas"`
+	ContractCodeGasByte  uint64 `json:"contract_code_gas_byte"`
+	ContractCallDataByte uint64 `json:"contract_call_data_gas_byte"`
+	SVMGasPerOperation   uint64 `json:"svm_gas_per_operation"`
+	WASMMaxCodeBytes     uint64 `json:"wasm_max_code_bytes"`
+	WASMMemoryPages      uint32 `json:"wasm_memory_pages"`
+	WASMGasPerOperation  uint64 `json:"wasm_gas_per_operation"`
+	StorageReadGas       uint64 `json:"storage_read_gas"`
+	StorageWriteGas      uint64 `json:"storage_write_gas"`
+	EventGasPerByte      uint64 `json:"event_gas_per_byte"`
+	ContractTransferGas  uint64 `json:"contract_transfer_gas"`
+	WASMMaxEvents        uint64 `json:"wasm_max_events"`
+
 	// Storage pricing
 	PinRatePerGBMonth *big.Int `json:"pin_rate_per_gb_month"` // PinRate = 0.01 SPX/GB/month
 
 	// Inflation parameters
+	// The BPS fields are the consensus representation. The float fields below
+	// remain for wallet/UI projections and backward-compatible APIs only.
+	InitialInflationBPS uint64 `json:"initial_inflation_bps"`
+	InflationDecayBPS   uint64 `json:"inflation_decay_bps"`
+	StakingRewardBPS    uint64 `json:"staking_reward_bps"`
+	TargetStakeBPS      uint64 `json:"target_stake_bps"`
+
 	InitialInflationRate float64 `json:"initial_inflation_rate"` // Infl₀ = 0.05 (5% annual)
 	InflationDecayFactor float64 `json:"inflation_decay_factor"` // γ = 0.8 (decay factor)
 	StakingRewardShare   float64 `json:"staking_reward_share"`   // γ = 0.8 (80% to stakers)

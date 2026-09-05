@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
-	"time"
 
 	types "github.com/sphinxfndorg/protocol/src/core/transaction"
 )
@@ -73,11 +72,13 @@ func Deploy(store Store, tx *types.Transaction) (*ExecutionResult, error) {
 	}
 	store.SetContractCode(address, code)
 	metaJSON, err := json.Marshal(&ContractMeta{
-		Address:   address,
-		Creator:   tx.Sender,
-		Runtime:   spec.Runtime,
-		Standard:  spec.Standard,
-		CreatedAt: time.Now().Unix(),
+		Address:  address,
+		Creator:  tx.Sender,
+		Runtime:  spec.Runtime,
+		Standard: spec.Standard,
+		// Transaction time is consensus data. Never use local wall time in
+		// execution because it would make nodes derive different state roots.
+		CreatedAt: tx.Timestamp,
 	})
 	if err != nil {
 		return nil, err

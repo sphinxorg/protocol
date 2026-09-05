@@ -5,6 +5,7 @@
 package gui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image/color"
@@ -22,6 +23,7 @@ import (
 	keys "github.com/sphinxfndorg/protocol/src/usi/core/key"
 	"github.com/sphinxfndorg/protocol/src/usi/core/mint"
 	"github.com/sphinxfndorg/protocol/src/usi/core/sign"
+	usimail "github.com/sphinxfndorg/protocol/src/usi/mail"
 	pubkeydir "github.com/sphinxfndorg/protocol/src/usi/server/server"
 
 	"fyne.io/fyne/v2"
@@ -632,6 +634,9 @@ func Run() {
 		recipientEntry := widget.NewEntry()
 		recipientEntry.SetPlaceHolder("Fingerprints, comma-separated (leave blank for self)")
 
+		peerEntry := widget.NewEntry()
+		peerEntry.SetPlaceHolder("Optional recipient peer, e.g. 192.0.2.10:2525")
+
 		messageEntry := widget.NewMultiLineEntry()
 		messageEntry.SetPlaceHolder("Optional secure message embedded inside the .vault file…\n\nExample: 'Q4 financial reports. Finance team only.'")
 		messageEntry.Wrapping = fyne.TextWrapWord
@@ -687,6 +692,7 @@ func Run() {
 				}
 
 				embeddedMessage := messageEntry.Text
+				peerAddress := strings.TrimSpace(peerEntry.Text)
 				var messageFilePath string
 				if embeddedMessage != "" {
 					messageFilePath = filepath.Join(selectedFolder, ".encrypted_message.txt")
@@ -712,11 +718,24 @@ func Run() {
 					if messageFilePath != "" {
 						os.Remove(messageFilePath)
 					}
+					var deliveryErr error
+					if err == nil && peerAddress != "" {
+						if len(recipients) != 1 {
+							deliveryErr = errors.New("peer delivery requires exactly one recipient fingerprint")
+						} else {
+							_, deliveryErr = usimail.SendVault(context.Background(), peerAddress, sessionRawFingerprint, recipients[0], selectedFolder+".vault")
+						}
+					}
 
 					fyne.Do(func() {
 						progDlg.Hide()
 						if err != nil {
 							dialog.ShowError(err, window)
+							return
+						}
+						if deliveryErr != nil {
+							addActivity(fmt.Sprintf("Encrypted but not delivered: %s", filepath.Base(selectedFolder)))
+							dialog.ShowError(fmt.Errorf("vault was encrypted, but peer delivery failed: %w", deliveryErr), window)
 							return
 						}
 						if embeddedMessage != "" {
@@ -729,9 +748,13 @@ func Run() {
 							addActivity(fmt.Sprintf("Encrypted: %s (recipients: %d)", filepath.Base(selectedFolder), len(recipients)))
 							dialog.ShowInformation("Locked", fmt.Sprintf("Folder encrypted successfully.\nShared with %d recipient(s).", len(recipients)), window)
 						}
+						if peerAddress != "" {
+							addActivity(fmt.Sprintf("Delivered encrypted vault to %s", peerAddress))
+						}
 						selectedFolder = ""
 						resetDropZone()
 						recipientEntry.SetText("")
+						peerEntry.SetText("")
 						messageEntry.SetText("")
 					})
 				}()
@@ -743,6 +766,7 @@ func Run() {
 			selectedFolder = ""
 			resetDropZone()
 			recipientEntry.SetText("")
+			peerEntry.SetText("")
 			messageEntry.SetText("")
 		})
 
@@ -759,6 +783,8 @@ func Run() {
 			alertBox("The original folder remains intact until encryption completes.", color.RGBA{96, 165, 250, 20}, colInfo),
 			spacer(12),
 			alertBox("Add recipient fingerprints to share vault access with others.", color.RGBA{74, 222, 158, 15}, colAccent),
+			spacer(12),
+			alertBox("Peer delivery sends the encrypted .vault unchanged. Run a USI mail peer on the recipient first.", color.RGBA{96, 165, 250, 20}, colInfo),
 		)
 
 		form := container.NewVBox(
@@ -775,6 +801,10 @@ func Run() {
 			sectionLabel("Recipients (optional)"),
 			spacer(6),
 			recipientEntry,
+			spacer(16),
+			sectionLabel("Recipient Peer (optional)"),
+			spacer(6),
+			peerEntry,
 			spacer(16),
 			hRule(),
 			spacer(12),

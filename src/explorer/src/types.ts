@@ -90,3 +90,11 @@ export interface NetworkStats {
   genesisHash: string;
   syncMode: string;
 }
+
+// An address is counted only when it is first seen in a canonical block.
+// Offline wallet creation is deliberately not collected by the explorer.
+export interface HolderGrowthPoint {
+  date: string;
+  holders: number;
+  newHolders: number;
+}

@@ -8,6 +8,68 @@ import (
 	"math/big"
 )
 
+// GasQuote is the deterministic gas quote for a transaction. Amounts are in
+// nSPX, and GasLimit is in gas units.
+type GasQuote struct {
+	GasLimit *big.Int `json:"gas_limit"`
+	GasPrice *big.Int `json:"gas_price"`
+	GasFee   *big.Int `json:"gas_fee"`
+}
+
+// QuoteTransactionGas calculates the minimum gas needed for a transaction.
+// ReturnData is charged per byte so data anchors pay for their on-chain
+// footprint using the same policy schedule as every other transaction.
+func (p *PolicyParameters) QuoteTransactionGas(returnDataBytes uint64) *GasQuote {
+	gasLimit := new(big.Int).SetUint64(p.BaseTransactionGas)
+	dataGas := new(big.Int).SetUint64(returnDataBytes)
+	dataGas.Mul(dataGas, new(big.Int).SetUint64(p.ReturnDataGasPerByte))
+	gasLimit.Add(gasLimit, dataGas)
+
+	gasPrice := new(big.Int).Set(p.MinimumGasPrice)
+	return &GasQuote{
+		GasLimit: gasLimit,
+		GasPrice: gasPrice,
+		GasFee:   new(big.Int).Mul(gasLimit, gasPrice),
+	}
+}
+
+// QuoteContractGas returns the policy minimum for deploying or calling a
+// contract. operationCount is supplied by deterministic SVM execution.
+func (p *PolicyParameters) QuoteContractGas(deploy bool, codeBytes, callDataBytes, operationCount uint64) *GasQuote {
+	base := p.ContractCallGas
+	if deploy {
+		base = p.ContractDeployGas
+	}
+	gasLimit := new(big.Int).SetUint64(base)
+	for _, part := range []struct{ count, price uint64 }{
+		{codeBytes, p.ContractCodeGasByte},
+		{callDataBytes, p.ContractCallDataByte},
+		{operationCount, p.SVMGasPerOperation},
+	} {
+		gasLimit.Add(gasLimit, new(big.Int).Mul(new(big.Int).SetUint64(part.count), new(big.Int).SetUint64(part.price)))
+	}
+	gasPrice := new(big.Int).Set(p.MinimumGasPrice)
+	return &GasQuote{GasLimit: gasLimit, GasPrice: gasPrice, GasFee: new(big.Int).Mul(gasLimit, gasPrice)}
+}
+
+// QuoteWASMContractGas quotes a statically bounded WASM invocation. Validation
+// rejects loops and internal calls, so every operation and host-call count is
+// known before block admission.
+func (p *PolicyParameters) QuoteWASMContractGas(deploy bool, codeBytes, callDataBytes, operations, storageReads, storageWrites, eventBytes, transfers uint64) *GasQuote {
+	quote := p.QuoteContractGas(deploy, codeBytes, callDataBytes, 0)
+	for _, part := range []struct{ count, price uint64 }{
+		{operations, p.WASMGasPerOperation},
+		{storageReads, p.StorageReadGas},
+		{storageWrites, p.StorageWriteGas},
+		{eventBytes, p.EventGasPerByte},
+		{transfers, p.ContractTransferGas},
+	} {
+		quote.GasLimit.Add(quote.GasLimit, new(big.Int).Mul(new(big.Int).SetUint64(part.count), new(big.Int).SetUint64(part.price)))
+	}
+	quote.GasFee.Mul(quote.GasLimit, quote.GasPrice)
+	return quote
+}
+
 // CalculateTxFee calculates transaction fee in nSPX
 // Formula: TxFee_nSPX = B_w * (S_tx * R) + B_cmp * Ops_tx + K_tx
 // Where:
@@ -109,8 +171,9 @@ func (p *PolicyParameters) CalculateIPFSFee(dataSizeBytes uint64, months uint64)
 	// Convert bytes to GB (1 GB = 1024^3 bytes)
 	gb := float64(dataSizeBytes) / math.Pow(1024, 3)
 
-	// IPFSFee_SPX = PinRate * GB * months
-	pinRateSPX := 0.01 // 0.01 SPX/GB/month
+	// IPFSFee_SPX = PinRate * GB * months. Read the policy value rather than
+	// duplicating the default in this formula.
+	pinRateSPX := p.ConvertNSPXToSPX(p.PinRatePerGBMonth)
 	feeSPX := pinRateSPX * gb * float64(months)
 
 	return feeSPX
@@ -118,8 +181,7 @@ func (p *PolicyParameters) CalculateIPFSFee(dataSizeBytes uint64, months uint64)
 
 // CalculateIPFSFeeInNSPX calculates off-chain IPFS pinning fee in nSPX
 func (p *PolicyParameters) CalculateIPFSFeeInNSPX(dataSizeBytes uint64, months uint64) *big.Int {
-	feeSPX := p.CalculateIPFSFee(dataSizeBytes, months)
-	return p.ConvertSPXToNSPX(feeSPX)
+	return p.CalculatePinningCost(dataSizeBytes, months)
 }
 
 // CalculateTotalFee calculates total fee for an action that requires both on-chain and IPFS components
@@ -257,11 +319,9 @@ func (p *PolicyParameters) GetFeePerByte() *big.Int {
 	return total
 }
 
-// DistributeFees distributes collected fees according to the allocation:
-// Validators: 60%
-// Stakers:   25%
-// Treasury:  10%
-// Burned:     5%
+// DistributeFees distributes collected fees according to the policy's basis
+// point allocation. Rounding remainder is burned so the output always sums to
+// totalFees.
 func (p *PolicyParameters) DistributeFees(totalFees *big.Int) *FeeDistribution {
 	if totalFees.Sign() <= 0 {
 		return &FeeDistribution{
@@ -273,20 +333,18 @@ func (p *PolicyParameters) DistributeFees(totalFees *big.Int) *FeeDistribution {
 		}
 	}
 
-	// Convert percentages to basis points (1% = 100 basis points)
-	// 60% = 6000 basis points, 25% = 2500, 10% = 1000, 5% = 500
 	const basisPoints = 10000
 
-	validatorsShare := new(big.Int).Mul(totalFees, big.NewInt(6000))
+	validatorsShare := new(big.Int).Mul(totalFees, new(big.Int).SetUint64(p.ValidatorFeeBPS))
 	validatorsShare.Div(validatorsShare, big.NewInt(basisPoints))
 
-	stakersShare := new(big.Int).Mul(totalFees, big.NewInt(2500))
+	stakersShare := new(big.Int).Mul(totalFees, new(big.Int).SetUint64(p.StakerFeeBPS))
 	stakersShare.Div(stakersShare, big.NewInt(basisPoints))
 
-	treasuryShare := new(big.Int).Mul(totalFees, big.NewInt(1000))
+	treasuryShare := new(big.Int).Mul(totalFees, new(big.Int).SetUint64(p.TreasuryFeeBPS))
 	treasuryShare.Div(treasuryShare, big.NewInt(basisPoints))
 
-	burnedShare := new(big.Int).Mul(totalFees, big.NewInt(500))
+	burnedShare := new(big.Int).Mul(totalFees, new(big.Int).SetUint64(p.BurnFeeBPS))
 	burnedShare.Div(burnedShare, big.NewInt(basisPoints))
 
 	// Verify that shares sum to total fees (account for any rounding)
@@ -318,22 +376,22 @@ func (p *PolicyParameters) DistributeFeesFromComponents(fees *FeeComponents) *Fe
 
 // GetValidatorFeeShare returns the percentage that goes to validators
 func (p *PolicyParameters) GetValidatorFeeShare() float64 {
-	return 0.60 // 60%
+	return float64(p.ValidatorFeeBPS) / 10000
 }
 
 // GetStakerFeeShare returns the percentage that goes to stakers
 func (p *PolicyParameters) GetStakerFeeShare() float64 {
-	return 0.25 // 25%
+	return float64(p.StakerFeeBPS) / 10000
 }
 
 // GetTreasuryFeeShare returns the percentage that goes to treasury
 func (p *PolicyParameters) GetTreasuryFeeShare() float64 {
-	return 0.10 // 10%
+	return float64(p.TreasuryFeeBPS) / 10000
 }
 
 // GetBurnedFeeShare returns the percentage that is burned
 func (p *PolicyParameters) GetBurnedFeeShare() float64 {
-	return 0.05 // 5%
+	return float64(p.BurnFeeBPS) / 10000
 }
 
 // CalculateValidatorFees calculates the portion of fees that go to validators

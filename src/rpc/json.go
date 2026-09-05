@@ -313,6 +313,47 @@ func (h *JSONRPCHandler) registerMethods() {
 	h.methods["storeartifact"] = h.storeArtifact
 	h.methods["getartifact"] = h.getArtifact
 	h.methods["getnonce"] = h.getNonce
+	h.methods["getcontract"] = h.getContract
+	h.methods["getcontractstorage"] = h.getContractStorage
+}
+
+func (h *JSONRPCHandler) getContract(params interface{}) (interface{}, error) {
+	var values []interface{}
+	if err := h.parseParams(params, &values); err != nil {
+		return nil, err
+	}
+	if len(values) != 1 {
+		return nil, errors.New("getcontract requires one contract address")
+	}
+	address, ok := values[0].(string)
+	if !ok {
+		return nil, errors.New("invalid contract address")
+	}
+	meta, code, err := h.server.blockchain.GetContract(address)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"meta": meta, "code": hex.EncodeToString(code)}, nil
+}
+
+func (h *JSONRPCHandler) getContractStorage(params interface{}) (interface{}, error) {
+	var values []interface{}
+	if err := h.parseParams(params, &values); err != nil {
+		return nil, err
+	}
+	if len(values) != 2 {
+		return nil, errors.New("getcontractstorage requires contract address and key")
+	}
+	address, addressOK := values[0].(string)
+	key, keyOK := values[1].(string)
+	if !addressOK || !keyOK {
+		return nil, errors.New("invalid contract storage parameters")
+	}
+	value, err := h.server.blockchain.GetContractStorage(address, key)
+	if err != nil {
+		return nil, err
+	}
+	return hex.EncodeToString(value), nil
 }
 
 // ProcessRequest processes a JSON-RPC request or batch of requests.

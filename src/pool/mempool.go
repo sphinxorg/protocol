@@ -744,6 +744,11 @@ func (mp *Mempool) CalculateTransactionSize(tx *types.Transaction) uint64 {
 		logger.Debug("CalculateTransactionSize: including OP_RETURN data size=%d bytes", len(tx.ReturnData))
 	}
 
+	// Contract code and ABI call data are consensus payload, not metadata.
+	size += uint64(len(tx.Code))
+	size += uint64(len(tx.CallData))
+	size += uint64(len(tx.ToContract))
+
 	return size
 }
 

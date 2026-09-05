@@ -35,6 +35,39 @@ func TestCalculateTxFee(t *testing.T) {
 	}
 }
 
+func TestQuoteTransactionGas(t *testing.T) {
+	p := NewPolicyParameters()
+	quote := p.QuoteTransactionGas(32)
+	if quote.GasLimit.Cmp(big.NewInt(24200)) != 0 {
+		t.Fatalf("gas limit: want 24200, got %s", quote.GasLimit)
+	}
+	expectedFee := new(big.Int).Mul(big.NewInt(24200), p.MinimumGasPrice)
+	if quote.GasFee.Cmp(expectedFee) != 0 {
+		t.Fatalf("gas fee: want %s, got %s", expectedFee, quote.GasFee)
+	}
+}
+
+func TestPolicyControlsBlockRewardAndFeeAllocation(t *testing.T) {
+	p := NewPolicyParameters()
+	p.BlockReward = big.NewInt(123)
+	p.ValidatorFeeBPS = 5000
+	p.StakerFeeBPS = 3000
+	p.TreasuryFeeBPS = 1000
+	p.BurnFeeBPS = 1000
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("custom policy should be valid: %v", err)
+	}
+	if p.CalculateBlockReward().Cmp(big.NewInt(123)) != 0 {
+		t.Fatal("block reward did not come from policy")
+	}
+	d := p.DistributeFees(big.NewInt(10000))
+	if d.Validators.Cmp(big.NewInt(5000)) != 0 || d.Stakers.Cmp(big.NewInt(3000)) != 0 ||
+		d.Treasury.Cmp(big.NewInt(1000)) != 0 || d.Burned.Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("unexpected policy fee allocation: %+v", d)
+	}
+}
+
 func TestCalculateSigFee(t *testing.T) {
 	p := NewPolicyParameters()
 
@@ -94,6 +127,17 @@ func TestCalculateIPFSFee(t *testing.T) {
 	}
 }
 
+func TestStorageCostUsesPolicyPinRateAndExactIntegerMath(t *testing.T) {
+	p := NewPolicyParameters()
+	pricing := p.CalculateStorageCostExact(1, 1)
+	if pricing.CostPerMonth.Sign() <= 0 || pricing.TotalCost.Cmp(pricing.CostPerMonth) != 0 {
+		t.Fatalf("unexpected storage pricing: %+v", pricing)
+	}
+	if got := p.CalculatePinningCost(1024*1024*1024, 2); got.Cmp(new(big.Int).Mul(p.PinRatePerGBMonth, big.NewInt(2))) != 0 {
+		t.Fatalf("pinning cost: got %s", got)
+	}
+}
+
 func TestCalculateAnnualInflation(t *testing.T) {
 	p := NewPolicyParameters()
 
@@ -116,6 +160,30 @@ func TestCalculateAnnualInflation(t *testing.T) {
 	expectedYear3 := 0.032
 	if year3 < expectedYear3-0.000001 || year3 > expectedYear3+0.000001 {
 		t.Errorf("Year 3 inflation expected %f, got %f", expectedYear3, year3)
+	}
+}
+
+func TestCalculateEpochInflationExactUsesPolicyBPS(t *testing.T) {
+	p := NewPolicyParameters()
+	p.BlocksPerEpoch = p.GetBlocksPerYear() // one epoch in a year
+	p.InitialInflationBPS = 500
+	p.InflationDecayBPS = 8000
+	p.StakingRewardBPS = 8000
+	d := p.CalculateEpochInflationExact(big.NewInt(1000000), 2)
+	// 1,000,000 * (5% * 80%) = 40,000, entirely integer based.
+	if d.TotalMinted.Cmp(big.NewInt(40000)) != 0 || d.StakingRewards.Cmp(big.NewInt(32000)) != 0 || d.CommunityFund.Cmp(big.NewInt(8000)) != 0 {
+		t.Fatalf("unexpected exact inflation distribution: %+v", d)
+	}
+}
+
+func TestCalculateValidatorRewardExact(t *testing.T) {
+	p := NewPolicyParameters()
+	got := p.CalculateValidatorRewardExact(big.NewInt(25), big.NewInt(100), big.NewInt(1000), 1000)
+	if got.Cmp(big.NewInt(25)) != 0 { // 25% reward share, then 10% commission
+		t.Fatalf("validator reward: want 25, got %s", got)
+	}
+	if got := p.CalculateValidatorRewardExact(big.NewInt(1), big.NewInt(0), big.NewInt(1), 0); got.Sign() != 0 {
+		t.Fatalf("zero stake must not panic or pay reward: %s", got)
 	}
 }
 

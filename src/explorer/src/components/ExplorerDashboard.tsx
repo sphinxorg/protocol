@@ -8,7 +8,7 @@ import {
   ShieldAlert, Cpu, HardDrive, Database, 
   Users, Activity, Key, Globe, Radio, Play, Pause, RefreshCw 
 } from 'lucide-react';
-import { Block, Transaction, NetworkStats, Wallet } from '../types';
+import { Block, Transaction, NetworkStats, Wallet, HolderGrowthPoint } from '../types';
 import { formatHash } from '../utils/formatters';
 
 interface DashboardProps {
@@ -17,6 +17,7 @@ interface DashboardProps {
   transactions: Transaction[];
   mempool: Transaction[];
   wallets: Wallet[];
+  holderGrowth: HolderGrowthPoint[];
   autoMineActive: boolean;
   onToggleAutoMine: () => void;
   onManualMine: () => void;
@@ -32,6 +33,7 @@ export default function ExplorerDashboard({
   transactions,
   mempool,
   wallets,
+  holderGrowth,
   autoMineActive,
   onToggleAutoMine,
   onManualMine,
@@ -73,6 +75,13 @@ export default function ExplorerDashboard({
         );
     }
   };
+
+  const maxHolders = Math.max(1, ...holderGrowth.map(point => point.holders));
+  const growthPath = holderGrowth.map((point, index) => {
+    const x = holderGrowth.length <= 1 ? 0 : (index / (holderGrowth.length - 1)) * 100;
+    const y = 100 - (point.holders / maxHolders) * 88 - 6;
+    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
+  }).join(' ');
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -188,6 +197,40 @@ export default function ExplorerDashboard({
             Stake: {parseFloat(stats.totalStakeSpx).toLocaleString()} SPX
           </p>
         </div>
+      </div>
+
+      {/* Canonical address discovery history */}
+      <div className="bg-slate-900/30 border border-white/5 rounded-2xl p-6 backdrop-blur-md">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+              <span className="w-1.5 h-4 bg-brand-green rounded-full" />
+              SPIF Holder Growth
+            </h2>
+            <p className="text-xs text-slate-500 font-mono mt-1">Addresses first observed in finalized blocks — last 30 days</p>
+          </div>
+          <div className="text-right font-mono">
+            <div className="text-xl text-brand-green font-bold">{holderGrowth.at(-1)?.holders ?? 0}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wider">on-chain addresses</div>
+          </div>
+        </div>
+        {holderGrowth.length === 0 ? (
+          <div className="h-32 flex items-center justify-center text-xs font-mono text-slate-600">No canonical address events in this period.</div>
+        ) : (
+          <div className="h-32 relative">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full overflow-visible" role="img" aria-label="SPIF holder growth chart">
+              <path d={growthPath} fill="none" stroke="rgb(52 211 153)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+              {holderGrowth.map((point, index) => {
+                const x = holderGrowth.length <= 1 ? 0 : (index / (holderGrowth.length - 1)) * 100;
+                const y = 100 - (point.holders / maxHolders) * 88 - 6;
+                return <circle key={point.date} cx={x} cy={y} r="1.8" fill="rgb(52 211 153)"><title>{`${point.date}: ${point.holders} holders, +${point.newHolders} new`}</title></circle>;
+              })}
+            </svg>
+            <div className="absolute inset-x-0 bottom-0 flex justify-between text-[10px] text-slate-600 font-mono pointer-events-none">
+              <span>{holderGrowth[0]?.date}</span><span>{holderGrowth.at(-1)?.date}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 3. Splitted View: Blocks/Txs and the Mempool Live Activity */}

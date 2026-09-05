@@ -7,7 +7,7 @@
  * All addresses from the backend (raw hex) are formatted into SPIF display format.
  */
 
-import { Block, Transaction, Validator, Wallet, NetworkStats } from '../types';
+import { Block, Transaction, Validator, Wallet, NetworkStats, HolderGrowthPoint } from '../types';
 import { formatSPIFAddress, normalizeSPIFAddress } from '../utils/formatters';
 
 // Base URL for API requests. In development, Vite proxies /api to the Go backend.
@@ -69,6 +69,20 @@ export async function fetchStats(): Promise<NetworkStats> {
     genesisHash: raw.chain?.genesis_hash || '',
     syncMode: raw.chain?.sync_mode || 'Fully Audited (SPHINCS+ Hash Signature Verified)',
   };
+}
+
+export async function fetchHolderGrowth(days: number = 30): Promise<HolderGrowthPoint[]> {
+  try {
+    const raw: any = await fetchApi(`/holders/growth?days=${days}`);
+    if (!Array.isArray(raw.points)) return [];
+    return raw.points.map((point: any) => ({
+      date: typeof point.date === 'string' ? point.date : '',
+      holders: Number(point.holders) || 0,
+      newHolders: Number(point.new_holders) || 0,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 // ============================================================================

@@ -30,10 +30,38 @@ func NewPolicyParameters() *PolicyParameters {
 		BaseStorageFee: big.NewInt(200000), // β = 200,000 nSPX
 		TransactionFee: big.NewInt(1000),   // K_tx = 1,000 nSPX
 
+		// A simple, deterministic gas schedule. Return data covers data anchors
+		// (including USI mint anchors) without giving the wallet a special case.
+		BaseTransactionGas:   21000,
+		ReturnDataGasPerByte: 100,
+		MinimumGasPrice:      big.NewInt(1000000000),                            // 1 gSPX per gas
+		BlockReward:          new(big.Int).Mul(big.NewInt(5), big.NewInt(1e18)), // 5 SPX
+		ValidatorFeeBPS:      6000,
+		StakerFeeBPS:         2500,
+		TreasuryFeeBPS:       1000,
+		BurnFeeBPS:           500,
+		ContractDeployGas:    100000,
+		ContractCallGas:      30000,
+		ContractCodeGasByte:  50,
+		ContractCallDataByte: 25,
+		SVMGasPerOperation:   10,
+		WASMMaxCodeBytes:     512 * 1024,
+		WASMMemoryPages:      16, // 1 MiB
+		WASMGasPerOperation:  3,
+		StorageReadGas:       100,
+		StorageWriteGas:      20000,
+		EventGasPerByte:      8,
+		ContractTransferGas:  9000,
+		WASMMaxEvents:        64,
+
 		// Storage pricing
 		PinRatePerGBMonth: pinRatePerGBMonth, // 0.01 SPX/GB/month in nSPX
 
 		// Inflation parameters
+		InitialInflationBPS:  500,  // 5.00% annual inflation
+		InflationDecayBPS:    8000, // 80.00% of the preceding year's rate
+		StakingRewardBPS:     8000, // 80.00% of new issuance to staking
+		TargetStakeBPS:       7000, // 70.00% target stake
 		InitialInflationRate: 0.05, // 5% annual inflation
 		InflationDecayFactor: 0.8,  // γ = 0.8 (decay factor for geometric progression)
 		StakingRewardShare:   0.8,  // 80% to stakers
@@ -77,6 +105,22 @@ func (p *PolicyParameters) Validate() error {
 	if p.TransactionFee.Sign() <= 0 {
 		return ErrInvalidTransactionFee
 	}
+	if p.BaseTransactionGas == 0 || p.MinimumGasPrice == nil || p.MinimumGasPrice.Sign() <= 0 {
+		return ErrInvalidTransactionFee
+	}
+	if p.BlockReward == nil || p.BlockReward.Sign() < 0 {
+		return ErrInvalidBlockReward
+	}
+	if p.ContractDeployGas == 0 || p.ContractCallGas == 0 || p.SVMGasPerOperation == 0 {
+		return ErrInvalidTransactionFee
+	}
+	if p.WASMMaxCodeBytes == 0 || p.WASMMemoryPages == 0 || p.WASMGasPerOperation == 0 ||
+		p.StorageReadGas == 0 || p.StorageWriteGas == 0 || p.EventGasPerByte == 0 || p.ContractTransferGas == 0 || p.WASMMaxEvents == 0 {
+		return ErrInvalidTransactionFee
+	}
+	if p.ValidatorFeeBPS+p.StakerFeeBPS+p.TreasuryFeeBPS+p.BurnFeeBPS != 10000 {
+		return ErrInvalidFeeDistribution
+	}
 
 	// Validate inflation parameters
 	if p.InitialInflationRate < 0 || p.InitialInflationRate > 1 {
@@ -87,6 +131,10 @@ func (p *PolicyParameters) Validate() error {
 	}
 	if p.TargetStakeRatio < 0 || p.TargetStakeRatio > 1 {
 		return ErrInvalidTargetStakeRatio
+	}
+	if p.InitialInflationBPS > 10000 || p.InflationDecayBPS > 10000 ||
+		p.StakingRewardBPS > 10000 || p.TargetStakeBPS > 10000 {
+		return ErrInvalidInflationRate
 	}
 
 	return nil

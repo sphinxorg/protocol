@@ -8,6 +8,28 @@ import (
 	"math/big"
 )
 
+// CalculateValidatorRewardExact returns the commission portion of an epoch's
+// staking rewards using integer basis points. The staking subsystem can use it
+// when it snapshots validator and delegation balances at an epoch boundary.
+func (p *PolicyParameters) CalculateValidatorRewardExact(validatorStake, totalStake, epochRewards *big.Int, commissionBPS uint64) *big.Int {
+	if validatorStake == nil || totalStake == nil || epochRewards == nil ||
+		validatorStake.Sign() <= 0 || totalStake.Sign() <= 0 || epochRewards.Sign() <= 0 || commissionBPS > basisPoints {
+		return big.NewInt(0)
+	}
+	baseReward := new(big.Int).Mul(epochRewards, validatorStake)
+	baseReward.Div(baseReward, totalStake)
+	return baseReward.Mul(baseReward, new(big.Int).SetUint64(commissionBPS)).Div(baseReward, new(big.Int).SetUint64(basisPoints))
+}
+
+// CalculateBlockReward returns the policy-defined reward for one ordinary
+// block. A copy is returned so callers cannot mutate the active policy.
+func (p *PolicyParameters) CalculateBlockReward() *big.Int {
+	if p == nil || p.BlockReward == nil {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Set(p.BlockReward)
+}
+
 // CalculateValidatorReward calculates reward for a validator based on their stake
 func (p *PolicyParameters) CalculateValidatorReward(
 	validatorStake *big.Int,
@@ -15,6 +37,9 @@ func (p *PolicyParameters) CalculateValidatorReward(
 	epochRewards *big.Int,
 	commissionRate float64,
 ) *big.Int {
+	if validatorStake == nil || totalStake == nil || epochRewards == nil || totalStake.Sign() <= 0 || commissionRate < 0 || commissionRate > 1 {
+		return big.NewInt(0)
+	}
 	// Validator's share of total stake
 	share := new(big.Int).Mul(validatorStake, new(big.Int).SetUint64(1e18))
 	share.Div(share, totalStake)
@@ -38,6 +63,9 @@ func (p *PolicyParameters) CalculateDelegatorReward(
 	validatorRewards *big.Int,
 	commissionRate float64,
 ) *big.Int {
+	if delegatorStake == nil || validatorStake == nil || validatorRewards == nil || validatorStake.Sign() <= 0 || commissionRate < 0 || commissionRate > 1 {
+		return big.NewInt(0)
+	}
 	// Delegator's share of validator's stake (excluding commission)
 	delegatorShare := new(big.Int).Mul(delegatorStake, new(big.Int).SetUint64(1e18))
 	delegatorShare.Div(delegatorShare, validatorStake)

@@ -8,7 +8,7 @@ import {
   Database, Users, Activity, Radio, Key, Globe, 
   Copy, Check, Clock, Search, Shield
 } from 'lucide-react';
-import { Block, Transaction, Validator, Wallet, NetworkStats } from './types';
+import { Block, Transaction, Validator, Wallet, NetworkStats, HolderGrowthPoint } from './types';
 import { formatHash, formatSPX } from './utils/formatters';
 
 // API service layer
@@ -31,6 +31,7 @@ export default function App() {
   const [mempool, setMempool] = useState<Transaction[]>([]);
   const [validators, setValidators] = useState<Validator[]>([]);
   const [wallets, setWallets] = useState<Wallet[]>([]);
+  const [holderGrowth, setHolderGrowth] = useState<HolderGrowthPoint[]>([]);
 
   // Loading state
   const [isLoading, setIsLoading] = useState(true);
@@ -58,11 +59,12 @@ export default function App() {
       const blocksData = await api.fetchBlocks(1, 25);
 
       // Fetch mempool, validators, wallets, and stats in parallel
-      const [statsData, mempoolData, validatorsData, walletsData] = await Promise.all([
+      const [statsData, mempoolData, validatorsData, walletsData, holderGrowthData] = await Promise.all([
         api.fetchStats(),
         api.fetchMempool(),
         api.fetchValidators(),
         api.fetchWallets(50),
+        api.fetchHolderGrowth(30),
       ]);
 
       // Collect all transactions: start with mempool txs, then add block txs
@@ -108,6 +110,7 @@ export default function App() {
       setMempool(mempoolData);
       setValidators(validatorsData);
       setWallets(walletsData);
+      setHolderGrowth(holderGrowthData);
       setTransactions(allTxs);
       setIsLoading(false);
       setError(null);
@@ -342,6 +345,7 @@ export default function App() {
                   transactions={transactions}
                   mempool={mempool}
                   wallets={wallets}
+                  holderGrowth={holderGrowth}
                   autoMineActive={false}
                   onToggleAutoMine={() => {}}
                   onManualMine={() => {}}

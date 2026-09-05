@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 
 	"github.com/sphinxfndorg/protocol/src/common"
 	logger "github.com/sphinxfndorg/protocol/src/console"
@@ -93,11 +94,12 @@ func (db *StateDB) GetLastNonce(address string) (uint64, error) {
 // NewStateDB - Update to restore reward tracking
 func NewStateDB(db *database.DB) *StateDB {
 	s := &StateDB{
-		db:            db,
-		pending:       make(map[string]*accountEntry),
-		totalSupply:   big.NewInt(0),
-		genesisSupply: big.NewInt(0),
-		rewardsMinted: big.NewInt(0),
+		db:              db,
+		pending:         make(map[string]*accountEntry),
+		contractPending: make(map[string][]byte),
+		totalSupply:     big.NewInt(0),
+		genesisSupply:   big.NewInt(0),
+		rewardsMinted:   big.NewInt(0),
 	}
 
 	// Restore persisted total supply
@@ -125,6 +127,28 @@ func NewStateDB(db *database.DB) *StateDB {
 	}
 
 	return s
+}
+
+// GetContractValue returns consensus contract state. Contract keys are kept
+// separate from accounts but included in the state root.
+func (s *StateDB) GetContractValue(key string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if value, ok := s.contractPending[key]; ok {
+		return append([]byte(nil), value...), nil
+	}
+	value, err := s.db.Get(contractPrefix + key)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), value...), nil
+}
+
+// SetContractValue stages a contract-state write for the enclosing block.
+func (s *StateDB) SetContractValue(key string, value []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contractPending[key] = append([]byte(nil), value...)
 }
 
 // NEW: SetGenesisSupply - Set the genesis allocation amount
@@ -585,6 +609,22 @@ func (s *StateDB) IncrementTotalSupply(amount *big.Int) {
 	s.totalSupply.Add(s.totalSupply, amount)
 }
 
+// DecrementTotalSupply removes permanently burned nSPX from the tracked
+// circulating supply. Callers must only use this after the amount has already
+// been removed from an account balance.
+func (s *StateDB) DecrementTotalSupply(amount *big.Int) {
+	if amount == nil || amount.Sign() <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.totalSupply.Cmp(amount) < 0 {
+		s.totalSupply.SetInt64(0)
+		return
+	}
+	s.totalSupply.Sub(s.totalSupply, amount)
+}
+
 // ----------------------------------------------------------------------------
 // Commit
 // ----------------------------------------------------------------------------
@@ -607,6 +647,11 @@ func (s *StateDB) Commit() ([]byte, error) {
 			return nil, fmt.Errorf("StateDB.Commit: put %s: %w", address, err)
 		}
 	}
+	for key, value := range s.contractPending {
+		if err := s.db.Put(contractPrefix+key, value); err != nil {
+			return nil, fmt.Errorf("StateDB.Commit: put contract %s: %w", key, err)
+		}
+	}
 
 	// Persist total supply
 	if err := s.db.Put(totalSupplyKey, []byte(s.totalSupply.String())); err != nil {
@@ -624,6 +669,7 @@ func (s *StateDB) Commit() ([]byte, error) {
 	}
 
 	s.pending = make(map[string]*accountEntry)
+	s.contractPending = make(map[string][]byte)
 
 	stateRoot, err := s.computeStateRoot()
 	if err != nil {
@@ -642,12 +688,22 @@ func (s *StateDB) computeStateRoot() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("computeStateRoot: %w", err)
 	}
-	keySet := make(map[string]struct{}, len(keys)+len(s.pending))
+	contractKeys, err := s.db.ListKeysWithPrefix(contractPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("computeStateRoot contracts: %w", err)
+	}
+	keySet := make(map[string]struct{}, len(keys)+len(contractKeys)+len(s.pending)+len(s.contractPending))
 	for _, k := range keys {
+		keySet[k] = struct{}{}
+	}
+	for _, k := range contractKeys {
 		keySet[k] = struct{}{}
 	}
 	for address := range s.pending {
 		keySet[accountPrefix+address] = struct{}{}
+	}
+	for key := range s.contractPending {
+		keySet[contractPrefix+key] = struct{}{}
 	}
 
 	if len(keySet) == 0 {
@@ -663,21 +719,33 @@ func (s *StateDB) computeStateRoot() ([]byte, error) {
 	leaves := make([][]byte, 0, len(keys))
 	for _, k := range keys {
 		var data []byte
-		address := k[len(accountPrefix):]
-		if e, ok := s.pending[address]; ok {
-			rec := accountRecord{
-				Balance: e.balance.String(),
-				Nonce:   e.nonce,
+		if address := strings.TrimPrefix(k, accountPrefix); strings.HasPrefix(k, accountPrefix) {
+			if e, ok := s.pending[address]; ok {
+				rec := accountRecord{
+					Balance: e.balance.String(),
+					Nonce:   e.nonce,
+				}
+				data, err = json.Marshal(rec)
+				if err != nil {
+					return nil, fmt.Errorf("computeStateRoot: marshal pending %s: %w", k, err)
+				}
+			} else {
+				data, err = s.db.Get(k)
+				if err != nil {
+					continue
+				}
 			}
-			data, err = json.Marshal(rec)
-			if err != nil {
-				return nil, fmt.Errorf("computeStateRoot: marshal pending %s: %w", k, err)
+		} else if key := strings.TrimPrefix(k, contractPrefix); strings.HasPrefix(k, contractPrefix) {
+			if value, ok := s.contractPending[key]; ok {
+				data = append([]byte(nil), value...)
+			} else {
+				data, err = s.db.Get(k)
+				if err != nil {
+					continue
+				}
 			}
 		} else {
-			data, err = s.db.Get(k)
-			if err != nil {
-				continue
-			}
+			continue
 		}
 		leaves = append(leaves, common.SpxHash(append([]byte(k), data...)))
 	}

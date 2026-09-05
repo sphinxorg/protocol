@@ -12,6 +12,7 @@ import (
 
 	"github.com/sphinxfndorg/protocol/src/consensus"
 	logger "github.com/sphinxfndorg/protocol/src/console"
+	"github.com/sphinxfndorg/protocol/src/contracts"
 	database "github.com/sphinxfndorg/protocol/src/core/state"
 	types "github.com/sphinxfndorg/protocol/src/core/transaction"
 	"github.com/sphinxfndorg/protocol/src/policy"
@@ -402,6 +403,83 @@ func (bc *Blockchain) EstimateTransactionPolicyCost(tx *types.Transaction) (uint
 	return size, ops, hashes, fee, nil
 }
 
+// RequiredTransactionGas returns the policy-defined gas quote for tx. It is
+// intentionally derived only from consensus transaction fields so every node
+// reaches the same result; USI quotes this schedule only for user experience.
+func (bc *Blockchain) RequiredTransactionGas(tx *types.Transaction) (*policy.GasQuote, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("nil transaction")
+	}
+	quote := bc.ActivePolicy().QuoteTransactionGas(uint64(len(tx.ReturnData)))
+	if len(tx.Code) == 0 && tx.ToContract == "" {
+		return quote, nil
+	}
+	var operations, reads, writes, eventBytes, transfers uint64
+	wasmExecution := false
+	if len(tx.Code) > 0 && isSVMCode(tx.Code) {
+		var err error
+		operations, err = contracts.AnalyzeSVM(tx.Code)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SVM contract: %w", err)
+		}
+	} else if len(tx.Code) > 0 && contracts.IsWASM(tx.Code) {
+		analysis, err := contracts.AnalyzeWASM(tx.Code)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WASM contract: %w", err)
+		}
+		wasmExecution = true
+		operations, reads, writes, eventBytes, transfers = analysis.Operations, analysis.StorageReads, analysis.StorageWrites, analysis.EventBytes, analysis.Transfers
+	} else if tx.ToContract != "" {
+		// SVM call gas depends on the stored program. Read the committed
+		// consensus state during admission; calls to contracts deployed earlier
+		// in the same block are intentionally not supported in this first VM.
+		state, err := bc.newStateDB()
+		if err != nil {
+			return nil, fmt.Errorf("load contract state for gas quote: %w", err)
+		}
+		code, err := newContractStore(state).GetContractCode(tx.ToContract)
+		if err != nil {
+			return nil, fmt.Errorf("unknown contract %q", tx.ToContract)
+		}
+		if isSVMCode(code) {
+			operations, err = contracts.AnalyzeSVM(code)
+			if err != nil {
+				return nil, fmt.Errorf("invalid stored SVM contract: %w", err)
+			}
+		} else if contracts.IsWASM(code) {
+			analysis, err := contracts.AnalyzeWASM(code)
+			if err != nil {
+				return nil, fmt.Errorf("invalid stored WASM contract: %w", err)
+			}
+			wasmExecution = true
+			operations, reads, writes, eventBytes, transfers = analysis.Operations, analysis.StorageReads, analysis.StorageWrites, analysis.EventBytes, analysis.Transfers
+		}
+	}
+	contractQuote := bc.ActivePolicy().QuoteContractGas(len(tx.Code) > 0, uint64(len(tx.Code)), uint64(len(tx.CallData)), operations)
+	if wasmExecution {
+		contractQuote = bc.ActivePolicy().QuoteWASMContractGas(len(tx.Code) > 0, uint64(len(tx.Code)), uint64(len(tx.CallData)), operations, reads, writes, eventBytes, transfers)
+	}
+	quote.GasLimit.Add(quote.GasLimit, contractQuote.GasLimit)
+	quote.GasFee.Mul(quote.GasLimit, quote.GasPrice)
+	return quote, nil
+}
+
+// ActivePolicy returns the consensus policy currently used by this chain.
+// Keeping this fallback makes pure helpers and tests safe before chain
+// parameters have been initialized.
+func (bc *Blockchain) ActivePolicy() *policy.PolicyParameters {
+	if bc != nil && bc.chainParams != nil {
+		return bc.chainParams.GetGovernancePolicy()
+	}
+	return policy.GetDefaultPolicyParams()
+}
+
+// PolicyBlockReward returns the consensus block reward. Chain parameters may
+// configure network mechanics, but monetary issuance is owned by policy.
+func (bc *Blockchain) PolicyBlockReward() *big.Int {
+	return bc.ActivePolicy().CalculateBlockReward()
+}
+
 // ValidateTransactionPolicy enforces governance policy for non-system txs.
 func (bc *Blockchain) ValidateTransactionPolicy(tx *types.Transaction) error {
 	if tx == nil {
@@ -410,8 +488,28 @@ func (bc *Blockchain) ValidateTransactionPolicy(tx *types.Transaction) error {
 	if tx.IsSystemTransaction() {
 		return nil
 	}
+	if len(tx.Code) > 0 && tx.ToContract != "" {
+		return fmt.Errorf("contract transaction cannot deploy and call simultaneously")
+	}
+	if len(tx.Code) > 0 && len(tx.CallData) > 0 {
+		return fmt.Errorf("contract deployment cannot contain call data")
+	}
+	if len(tx.Code) == 0 && tx.ToContract == "" && len(tx.CallData) > 0 {
+		return fmt.Errorf("call data requires a contract target")
+	}
 	if tx.GasLimit == nil || tx.GasPrice == nil {
 		return fmt.Errorf("missing gas fields")
+	}
+
+	quote, err := bc.RequiredTransactionGas(tx)
+	if err != nil {
+		return err
+	}
+	if tx.GasLimit.Cmp(quote.GasLimit) < 0 {
+		return fmt.Errorf("gas limit below policy minimum: offered %s, required %s", tx.GasLimit.String(), quote.GasLimit.String())
+	}
+	if tx.GasPrice.Cmp(quote.GasPrice) < 0 {
+		return fmt.Errorf("gas price below policy minimum: offered %s, required %s", tx.GasPrice.String(), quote.GasPrice.String())
 	}
 
 	_, _, _, requiredFee, err := bc.EstimateTransactionPolicyCost(tx)

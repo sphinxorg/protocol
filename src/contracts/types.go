@@ -40,6 +40,14 @@ type ExecutionResult struct {
 	ContractAddress string            `json:"contract_address,omitempty"`
 	Status          string            `json:"status"`
 	Return          map[string]string `json:"return,omitempty"`
+	Events          []ContractEvent   `json:"events,omitempty"`
+}
+
+// ContractEvent is immutable execution output. Its transaction-scoped key is
+// assigned by core before it is committed to StateDB.
+type ContractEvent struct {
+	Topic string `json:"topic"`
+	Data  string `json:"data"`
 }
 
 type SIP20Info struct {

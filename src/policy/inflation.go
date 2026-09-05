@@ -6,7 +6,41 @@ package policy
 
 import (
 	"math/big"
+	"time"
 )
+
+const basisPoints = uint64(10000)
+
+// CalculateEpochInflationExact calculates issuance using only integer policy
+// values. It is the consensus-safe counterpart to CalculateEpochInflation,
+// whose float values are retained for estimates and legacy callers.
+func (p *PolicyParameters) CalculateEpochInflationExact(totalSupply *big.Int, year uint64) *InflationDistribution {
+	if totalSupply == nil || totalSupply.Sign() <= 0 || p == nil || p.GetEpochsPerYear() == 0 {
+		return &InflationDistribution{Year: year, TotalMinted: big.NewInt(0), StakingRewards: big.NewInt(0), CommunityFund: big.NewInt(0)}
+	}
+	if year == 0 {
+		year = 1
+	}
+	rateBPS := p.InitialInflationBPS
+	for i := uint64(1); i < year; i++ {
+		rateBPS = rateBPS * p.InflationDecayBPS / basisPoints
+	}
+	denominator := new(big.Int).SetUint64(basisPoints * p.GetEpochsPerYear())
+	totalMinted := new(big.Int).Mul(totalSupply, new(big.Int).SetUint64(rateBPS))
+	totalMinted.Div(totalMinted, denominator)
+	stakingRewards := new(big.Int).Mul(totalMinted, new(big.Int).SetUint64(p.StakingRewardBPS))
+	stakingRewards.Div(stakingRewards, new(big.Int).SetUint64(basisPoints))
+	communityFund := new(big.Int).Sub(totalMinted, stakingRewards)
+	return &InflationDistribution{
+		Year:                year,
+		AnnualInflationRate: float64(rateBPS) / float64(basisPoints),
+		StakersShare:        float64(p.StakingRewardBPS) / float64(basisPoints),
+		CommunityPoolShare:  float64(basisPoints-p.StakingRewardBPS) / float64(basisPoints),
+		TotalMinted:         totalMinted,
+		StakingRewards:      stakingRewards,
+		CommunityFund:       communityFund,
+	}
+}
 
 // CalculateAnnualInflation calculates the annual inflation rate for a given year
 // Formula: Inflation(y) = Infl₀ * γ^(y-1)
@@ -56,6 +90,9 @@ func (p *PolicyParameters) CalculateAnnualInflationWithStakeAdjustment(year uint
 // BlockPerYear = (365 * 24 * 3600) / BlockTime
 // With BlockTime = 12 seconds: 31,536,000 / 12 = 2,628,000 blocks per year
 func (p *PolicyParameters) GetBlocksPerYear() uint64 {
+	if p == nil || p.BlockTime < time.Second {
+		return 0
+	}
 	secondsPerYear := uint64(365 * 24 * 3600) // 31,536,000 seconds
 	blocksPerYear := secondsPerYear / uint64(p.BlockTime.Seconds())
 	return blocksPerYear
@@ -64,6 +101,9 @@ func (p *PolicyParameters) GetBlocksPerYear() uint64 {
 // GetEpochsPerYear calculates number of epochs per year
 // EpochsPerYear = BlocksPerYear / BlocksPerEpoch
 func (p *PolicyParameters) GetEpochsPerYear() uint64 {
+	if p == nil || p.BlocksPerEpoch == 0 {
+		return 0
+	}
 	blocksPerYear := p.GetBlocksPerYear()
 	return blocksPerYear / p.BlocksPerEpoch
 }

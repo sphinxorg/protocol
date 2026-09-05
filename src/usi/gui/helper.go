@@ -23,6 +23,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	types "github.com/sphinxfndorg/protocol/src/core/transaction"
+	"github.com/sphinxfndorg/protocol/src/policy"
 	"github.com/sphinxfndorg/protocol/src/rpc"
 	"github.com/sphinxfndorg/protocol/src/storage"
 	keys "github.com/sphinxfndorg/protocol/src/usi/core/key"
@@ -514,13 +515,16 @@ func (c *WalletClient) AnchorMintReceipt(receipt *mint.MintReceipt) (txID string
 		nonce = uint64(time.Now().UnixNano())
 	}
 
+	// Mint anchors pay by their actual anchor size under the shared policy
+	// schedule. Core validates this independently when the transaction arrives.
+	gasQuote := policy.GetDefaultPolicyParams().QuoteTransactionGas(uint64(len(anchorData)))
 	tx := &types.Transaction{
 		ID:         "",
 		Sender:     rawSender,
 		Receiver:   rawSender, // self-send: this tx exists only to carry data
 		Amount:     big.NewInt(1),
-		GasLimit:   big.NewInt(21000),
-		GasPrice:   big.NewInt(GasPriceSPX),
+		GasLimit:   gasQuote.GasLimit,
+		GasPrice:   gasQuote.GasPrice,
 		Nonce:      nonce,
 		Timestamp:  time.Now().Unix(),
 		Signature:  []byte{},

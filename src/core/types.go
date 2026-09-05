@@ -118,7 +118,6 @@ type SphinxChainParameters struct {
 	MaxTransactionSize uint64
 	TargetBlockSize    uint64
 	BlockGasLimit      *big.Int
-	BaseBlockReward    *big.Int // Block reward in base units
 
 	// Genesis-specific configuration
 	GenesisConfig *GenesisConfig
@@ -467,10 +466,13 @@ type accountEntry struct {
 
 // StateDB is an in-memory account-state cache backed by *database.DB.
 type StateDB struct {
-	mu          sync.RWMutex
-	db          *database.DB
-	pending     map[string]*accountEntry
-	totalSupply *big.Int
+	mu      sync.RWMutex
+	db      *database.DB
+	pending map[string]*accountEntry
+	// contractPending holds deterministic contract code, metadata and storage
+	// writes until the enclosing block commits.
+	contractPending map[string][]byte
+	totalSupply     *big.Int
 	// NEW: Track genesis allocation separately from rewards
 	genesisSupply *big.Int
 	rewardsMinted *big.Int
