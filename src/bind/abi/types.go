@@ -1,3 +1,6 @@
+// Copyright (c) 2024-present Sphinx Core Dev
+// MIT License https://opensource.org/license/mit
+
 // Package abi implements the canonical application binary interface used by
 // Sphinx native contracts. The first ABI version is canonical JSON rather than
 // Ethereum's 32-byte word encoding because native SIP-20 calls already execute

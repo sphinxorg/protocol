@@ -1,3 +1,6 @@
+// Copyright (c) 2024-present Sphinx Core Dev
+// MIT License https://opensource.org/license/mit
+
 // usi-mail-peer runs a mailbox endpoint for encrypted USI vault delivery.
 package main
 

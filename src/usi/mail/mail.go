@@ -1,3 +1,6 @@
+// Copyright (c) 2024-present Sphinx Core Dev
+// MIT License https://opensource.org/license/mit
+
 // Package mail transports already-encrypted USI vaults between peers.
 //
 // It intentionally does not encrypt, decrypt, or inspect a vault. The vault
